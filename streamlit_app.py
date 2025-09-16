@@ -1,151 +1,109 @@
 import streamlit as st
 import pandas as pd
-import math
-from pathlib import Path
+import plotly.express as px
+import os
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
+st.set_page_config(page_title="세계 미세먼지 대시보드", layout="wide")
+
+st.title("🌍 세계 미세먼지(PM2.5) 대시보드")
+st.markdown("### OpenAQ 사용자 CSV 기반 시각화")
+
+# -----------------------------
+# CSV 파일 불러오기
+# -----------------------------
+csv_file = "openaq (1).csv"   # 파일명 고정 (괄호 없는 버전)
+
+if not os.path.exists(csv_file):
+    st.error(f"CSV 파일이 없습니다: {csv_file}")
+    st.stop()
+
+try:
+    df = pd.read_csv(csv_file)
+except Exception as e:
+    st.error(f"CSV 불러오기 실패: {e}")
+    st.stop()
+
+# -----------------------------
+# 데이터 확인
+# -----------------------------
+st.subheader("📄 데이터 미리보기")
+st.write(df.head())
+
+# 컬럼 이름 확인
+st.write("컬럼 목록:", list(df.columns))
+
+# -----------------------------
+# PM2.5 데이터만 필터링
+# -----------------------------
+if "parameter" in df.columns:
+    df_pm25 = df[df["parameter"].str.lower() == "pm25"]
+else:
+    st.error("CSV에 'parameter' 컬럼이 없습니다. PM2.5 데이터 필터링 불가.")
+    st.stop()
+
+if df_pm25.empty:
+    st.error("PM2.5 데이터가 없습니다. CSV 내용을 확인하세요.")
+    st.stop()
+
+# -----------------------------
+# 시간 변환
+# -----------------------------
+time_col = None
+for col in ["date.utc", "date.local", "timestamp", "time", "datetime"]:
+    if col in df_pm25.columns:
+        time_col = col
+        break
+
+if time_col is None:
+    st.error("시간 컬럼을 찾을 수 없습니다. (예: date.utc, date.local 등)")
+    st.stop()
+
+df_pm25[time_col] = pd.to_datetime(df_pm25[time_col], errors="coerce")
+df_pm25 = df_pm25.dropna(subset=[time_col])
+
+# -----------------------------
+# 국가별 평균 시계열 집계
+# -----------------------------
+if "country" not in df_pm25.columns:
+    st.error("CSV에 'country' 컬럼이 없습니다. 국가별 집계 불가.")
+    st.stop()
+
+df_grouped = (
+    df_pm25.groupby([pd.Grouper(key=time_col, freq="M"), "country"])["value"]
+    .mean()
+    .reset_index()
 )
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
-
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
-
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
-
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
-
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
+st.subheader("📈 세계 PM2.5 월평균 추세")
+fig = px.line(
+    df_grouped,
+    x=time_col,
+    y="value",
+    color="country",
+    title="국가별 PM2.5 월평균 농도",
+    labels={"value": "PM2.5 (µg/m³)", time_col: "날짜"},
 )
+st.plotly_chart(fig, use_container_width=True)
 
-''
-''
+# -----------------------------
+# 다운로드 버튼
+# -----------------------------
+st.subheader("⬇️ 데이터 다운로드")
+out_csv = df_grouped.to_csv(index=False).encode("utf-8")
+st.download_button("집계 데이터 다운로드 (CSV)", data=out_csv, file_name="pm25_summary.csv", mime="text/csv")
 
+# -----------------------------
+# 참고 정보
+# -----------------------------
+st.markdown("---")
+st.markdown("#### 출처·주의")
+st.markdown("""
+- 공식 데이터: [OpenAQ](https://openaq.org)
+- 참고 문서: [OpenAQ Docs](https://docs.openaq.org/)
+- 사용자 CSV: 앱 루트의 `openaq.csv` 파일 사용
+""")
 
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
-        )
+st.caption("개발자 노트: 이 앱은 Streamlit + GitHub Codespaces 환경에서 제작됨.")
+st.write("CSV 파일 크기:", df.shape)
+st.write("PM2.5 필터링 후:", df_pm25.shape)
+st.write("Groupby 후:", df_grouped.shape)
